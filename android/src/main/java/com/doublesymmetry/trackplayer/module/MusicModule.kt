@@ -55,6 +55,8 @@ class MusicModule(reactContext: ReactApplicationContext) : NativeTrackPlayerSpec
 
     companion object {
       const val NAME = "TrackPlayer"
+      @JvmStatic
+      var moduleContext: com.facebook.react.bridge.ReactApplicationContext? = null
     }
 
     override fun addListener(eventType: String) {
@@ -69,6 +71,7 @@ class MusicModule(reactContext: ReactApplicationContext) : NativeTrackPlayerSpec
 
     override fun initialize() {
         AppForegroundTracker.start()
+        moduleContext = context
     }
 
     override fun onServiceConnected(name: ComponentName, service: IBinder) {

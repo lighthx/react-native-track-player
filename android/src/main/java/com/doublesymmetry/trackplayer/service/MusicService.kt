@@ -166,6 +166,23 @@ class MusicService : HeadlessJsMediaService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         onStartCommandIntentValid = intent != null
         Timber.d("onStartCommand: ${intent?.action}, ${intent?.`package`}")
+
+        // Handle CUSTOM_NOTIFICATION_ACTION for custom buttons (workaround for some devices)
+        // Some devices (e.g., Huawei) don't properly connect MediaController to MediaSession,
+        // so custom buttons are sent via Intent instead of onCustomCommand callback
+        if (intent?.action == "androidx.media3.session.CUSTOM_NOTIFICATION_ACTION") {
+            val commandExtras = intent.extras
+            if (commandExtras != null) {
+                val customAction = commandExtras.getString("androidx.media3.session.EXTRAS_KEY_CUSTOM_NOTIFICATION_ACTION")
+                when (customAction) {
+                    "NEXT" -> emit(MusicEvents.BUTTON_SKIP_NEXT)
+                    "PREVIOUS" -> emit(MusicEvents.BUTTON_SKIP_PREVIOUS)
+                    "JUMP_FORWARD" -> emit(MusicEvents.BUTTON_JUMP_FORWARD)
+                    "JUMP_BACKWARD" -> emit(MusicEvents.BUTTON_JUMP_BACKWARD)
+                }
+            }
+        }
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             // HACK: this is not supposed to be here. I definitely screwed up. but Why?
             onMediaKeyEvent(intent)
@@ -674,7 +691,9 @@ class MusicService : HeadlessJsMediaService() {
     @SuppressLint("VisibleForTests")
     @MainThread
     fun emit(event: String, data: Bundle? = null) {
-        reactContext?.emitDeviceEvent(event, data?.let { Arguments.fromBundle(it) })
+        // In bridgeless/New Architecture mode, use MusicModule's ReactApplicationContext
+        val ctx = com.doublesymmetry.trackplayer.module.MusicModule.moduleContext ?: reactContext
+        ctx?.emitDeviceEvent(event, data?.let { Arguments.fromBundle(it) })
     }
 
     @SuppressLint("VisibleForTests")
@@ -809,10 +828,28 @@ class MusicService : HeadlessJsMediaService() {
             intent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
         }
 
+        // Fallback: some OEMs (e.g. Huawei) send MEDIA_BUTTON without a proper KeyEvent extra
+        if (keyEvent == null && intent?.action == "android.intent.action.MEDIA_BUTTON") {
+            Timber.d("MEDIA_BUTTON received without KeyEvent, emitting PLAY/PAUSE as fallback")
+            if (player.isPlaying) {
+                emit(MusicEvents.BUTTON_PAUSE)
+            } else {
+                emit(MusicEvents.BUTTON_PLAY)
+            }
+            return true
+        }
+
         if (keyEvent?.action == KeyEvent.ACTION_DOWN) {
             return when (keyEvent.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    emit(MusicEvents.BUTTON_PLAY_PAUSE)
+                    // Emit PLAY or PAUSE based on current state instead of PLAY_PAUSE
+                    // because remote-play-pause event is not received by JS NativeEventEmitter
+                    // in bridgeless/New Architecture mode
+                    if (player.isPlaying) {
+                        emit(MusicEvents.BUTTON_PAUSE)
+                    } else {
+                        emit(MusicEvents.BUTTON_PLAY)
+                    }
                     true
                 }
 
@@ -933,10 +970,22 @@ class MusicService : HeadlessJsMediaService() {
         ): ListenableFuture<SessionResult> {
             player.forwardingPlayer.let {
                 when (command.customAction) {
-                    CustomCommandButton.JUMP_BACKWARD.customAction -> { it.seekBack() }
-                    CustomCommandButton.JUMP_FORWARD.customAction -> { it.seekForward() }
-                    CustomCommandButton.NEXT.customAction -> { it.seekToNext() }
-                    CustomCommandButton.PREVIOUS.customAction -> { it.seekToPrevious() }
+                    CustomCommandButton.JUMP_BACKWARD.customAction -> {
+                        it.seekBack()
+                        emit(MusicEvents.BUTTON_JUMP_BACKWARD)
+                    }
+                    CustomCommandButton.JUMP_FORWARD.customAction -> {
+                        it.seekForward()
+                        emit(MusicEvents.BUTTON_JUMP_FORWARD)
+                    }
+                    CustomCommandButton.NEXT.customAction -> {
+                        it.seekToNext()
+                        emit(MusicEvents.BUTTON_SKIP_NEXT)
+                    }
+                    CustomCommandButton.PREVIOUS.customAction -> {
+                        it.seekToPrevious()
+                        emit(MusicEvents.BUTTON_SKIP_PREVIOUS)
+                    }
                 }
             }
             return super.onCustomCommand(session, controller, command, args)
